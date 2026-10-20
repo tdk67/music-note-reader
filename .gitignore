@@ -1,0 +1,44 @@
+# Python Virtual Environments
+.venv/
+.venv*/
+venv/
+env/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated Runtime Storage & OMR Job Artifacts
+storage/
+*.wav
+*.mid
+*.musicxml
+!samples/*.png
+!samples/*.pdf
+
+# Archive of Deprecated / Legacy Spikes & Unused Files
+archive/
+
+# Logs & Temporary Files
+*.log
+scratch/
+tmp/
+.tempmediaStorage/
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment & Private Secrets
+.env
+.env*.local
+*.local.json
