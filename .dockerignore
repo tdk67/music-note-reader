@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv*
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+storage/jobs/*
+!storage/jobs/.gitkeep
+archive/
+scratch/
+*.log
+test*.wav
+test*.mid
+score_*.wav

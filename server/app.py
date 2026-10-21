@@ -37,6 +37,13 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for Cloud Run and container orchestrators."""
+    return {"status": "ok", "service": "MusicNoteReader"}
+
+
 @app.post("/api/omr/upload")
 async def upload_sheet(file: UploadFile = File(...)):
     """Accepts PDF or Image (PNG, JPG), creates job and triggers async OMR pipeline."""
