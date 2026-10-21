@@ -217,8 +217,64 @@ function renderCompletedJob(job) {
   timelineFill.style.width = "0%";
   audioCurrentTime.textContent = "00:00";
 
+  // Set BPM for cursor mapping
+  currentScoreBpm = meta.bpm || 116;
+
   // Render MusicXML using OpenSheetMusicDisplay
   renderMusicXml(job.result.musicxml);
+}
+
+let currentScoreBpm = 116;
+let cursorTimestamps = [];
+let currentCursorIndex = 0;
+
+function buildCursorMap(bpm) {
+  cursorTimestamps = [];
+  currentCursorIndex = 0;
+  if (!osmd || !osmd.cursor) return;
+
+  try {
+    osmd.cursor.reset();
+    const secPerWholeNote = 240 / (bpm || 116);
+    while (!osmd.cursor.iterator.EndReached) {
+      const ts = osmd.cursor.iterator.currentTimeStamp.RealValue;
+      cursorTimestamps.push(ts * secPerWholeNote);
+      osmd.cursor.next();
+    }
+    osmd.cursor.reset();
+    osmd.cursor.show();
+  } catch (err) {
+    console.warn("Cursor mapping error:", err);
+  }
+}
+
+function updateCursorPosition(currentTime) {
+  if (!osmd || !osmd.cursor || cursorTimestamps.length === 0) return;
+
+  let targetIdx = 0;
+  for (let i = 0; i < cursorTimestamps.length; i++) {
+    if (cursorTimestamps[i] <= currentTime) {
+      targetIdx = i;
+    } else {
+      break;
+    }
+  }
+
+  if (targetIdx === currentCursorIndex) return;
+
+  if (targetIdx > currentCursorIndex) {
+    while (currentCursorIndex < targetIdx && !osmd.cursor.iterator.EndReached) {
+      osmd.cursor.next();
+      currentCursorIndex++;
+    }
+  } else {
+    osmd.cursor.reset();
+    currentCursorIndex = 0;
+    while (currentCursorIndex < targetIdx && !osmd.cursor.iterator.EndReached) {
+      osmd.cursor.next();
+      currentCursorIndex++;
+    }
+  }
 }
 
 function renderMusicXml(musicxmlStr) {
@@ -235,6 +291,7 @@ function renderMusicXml(musicxmlStr) {
       drawPartNames: false,
       newSystemFromXML: true,
       newPageFromXML: true,
+      followCursor: true,
     });
 
     osmd.EngravingRules.NewSystemAtXMLNewSystemAttribute = true;
@@ -245,6 +302,11 @@ function renderMusicXml(musicxmlStr) {
 
     osmd.load(musicxmlStr).then(() => {
       osmd.render();
+      if (osmd.cursor) {
+        osmd.cursor.show();
+        osmd.cursor.reset();
+        buildCursorMap(currentScoreBpm);
+      }
     });
   } catch (e) {
     console.error("OSMD render error:", e);
@@ -258,6 +320,10 @@ zoomInBtn.addEventListener("click", () => {
     currentZoom += 0.15;
     osmd.zoom = currentZoom;
     osmd.render();
+    if (osmd.cursor) {
+      osmd.cursor.update();
+      updateCursorPosition(audioElement.currentTime || 0);
+    }
   }
 });
 
@@ -266,6 +332,10 @@ zoomOutBtn.addEventListener("click", () => {
     currentZoom -= 0.15;
     osmd.zoom = currentZoom;
     osmd.render();
+    if (osmd.cursor) {
+      osmd.cursor.update();
+      updateCursorPosition(audioElement.currentTime || 0);
+    }
   }
 });
 
@@ -274,6 +344,10 @@ zoomResetBtn.addEventListener("click", () => {
     currentZoom = 1.0;
     osmd.zoom = currentZoom;
     osmd.render();
+    if (osmd.cursor) {
+      osmd.cursor.update();
+      updateCursorPosition(audioElement.currentTime || 0);
+    }
   }
 });
 
@@ -282,6 +356,9 @@ playBtn.addEventListener("click", () => {
   if (audioElement.paused) {
     audioElement.play().then(() => {
       playIcon.innerHTML = '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>';
+      if (osmd && osmd.cursor) {
+        osmd.cursor.show();
+      }
     }).catch(err => {
       console.warn("Audio play error:", err);
     });
@@ -300,13 +377,22 @@ audioElement.addEventListener("timeupdate", () => {
     const pct = (audioElement.currentTime / audioElement.duration) * 100;
     timelineFill.style.width = `${pct}%`;
     audioCurrentTime.textContent = formatSec(audioElement.currentTime);
+    updateCursorPosition(audioElement.currentTime);
   }
+});
+
+audioElement.addEventListener("seeked", () => {
+  updateCursorPosition(audioElement.currentTime);
 });
 
 audioElement.addEventListener("ended", () => {
   playIcon.innerHTML = '<path d="M8 5v14l11-7z"/>';
   timelineFill.style.width = "0%";
   audioCurrentTime.textContent = "00:00";
+  if (osmd && osmd.cursor) {
+    osmd.cursor.reset();
+    currentCursorIndex = 0;
+  }
 });
 
 timelineTrack.addEventListener("click", (e) => {
@@ -314,6 +400,7 @@ timelineTrack.addEventListener("click", (e) => {
   const ratio = (e.clientX - rect.left) / rect.width;
   if (!isNaN(audioElement.duration)) {
     audioElement.currentTime = ratio * audioElement.duration;
+    updateCursorPosition(audioElement.currentTime);
   }
 });
 
