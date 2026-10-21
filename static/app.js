@@ -45,6 +45,27 @@ const zoomInBtn = document.getElementById("zoomInBtn");
 const zoomOutBtn = document.getElementById("zoomOutBtn");
 const zoomResetBtn = document.getElementById("zoomResetBtn");
 
+// Song Library & Collection DOM Elements
+const btnToggleCollection = document.getElementById("btnToggleCollection");
+const collectionOverlay = document.getElementById("collectionOverlay");
+const btnCloseDrawer = document.getElementById("btnCloseDrawer");
+const collectionList = document.getElementById("collectionList");
+const collectionCountBadge = document.getElementById("collectionCountBadge");
+const collectionSearchInput = document.getElementById("collectionSearchInput");
+const btnExportCollection = document.getElementById("btnExportCollection");
+const importJsonInput = document.getElementById("importJsonInput");
+const btnEditTitleInline = document.getElementById("btnEditTitleInline");
+const currentScoreHeading = document.getElementById("currentScoreHeading");
+
+// Rename Modal DOM Elements
+const renameModal = document.getElementById("renameModal");
+const renameInput = document.getElementById("renameInput");
+const btnCancelRename = document.getElementById("btnCancelRename");
+const btnSaveRename = document.getElementById("btnSaveRename");
+
+let currentActiveScore = null; // Currently loaded score record { id, title, musicxml, metadata, bpm }
+let scorePendingRenameId = null;
+
 // 1. Drag & Drop & Upload Handling
 dropzone.addEventListener("click", () => fileInput.click());
 
@@ -187,12 +208,14 @@ function showError(msg) {
 }
 
 // 3. Render Transcribed Results & OpenSheetMusicDisplay
-function renderCompletedJob(job) {
+async function renderCompletedJob(job) {
   progressCard.classList.add("hidden");
   resultSection.classList.remove("hidden");
 
   const meta = (job.result && job.result.metadata) || {};
-  metaTitle.textContent = meta.title || "Untitled";
+  const songTitle = meta.title || "Untitled Score";
+  metaTitle.textContent = songTitle;
+  currentScoreHeading.textContent = songTitle;
 
   // Key Signature display
   const fifths = meta.key_fifths || 0;
@@ -220,6 +243,22 @@ function renderCompletedJob(job) {
   // Set BPM for cursor mapping
   currentScoreBpm = meta.bpm || 116;
 
+  // Auto-save into IndexedDB collection
+  try {
+    const savedRecord = await window.collectionStore.saveScore({
+      id: "job_" + job.job_id,
+      title: songTitle,
+      metadata: meta,
+      musicxml: job.result.musicxml,
+      bpm: currentScoreBpm,
+      previewAudioUrl: `/api/omr/jobs/${job.job_id}/audio.wav?instrument=piano`
+    });
+    currentActiveScore = savedRecord;
+    refreshCollectionBadge();
+  } catch (err) {
+    console.warn("Auto-save to collection error:", err);
+  }
+
   // Render MusicXML using OpenSheetMusicDisplay
   renderMusicXml(job.result.musicxml);
 }
@@ -236,10 +275,16 @@ function buildCursorMap(bpm) {
   try {
     osmd.cursor.reset();
     const secPerWholeNote = 240 / (bpm || 116);
-    while (!osmd.cursor.iterator.EndReached) {
-      const ts = osmd.cursor.iterator.currentTimeStamp.RealValue;
-      cursorTimestamps.push(ts * secPerWholeNote);
+    let stepCount = 0;
+    const maxSteps = 4000; // Safeguard against circular or infinite staff iterations
+    
+    while (!osmd.cursor.iterator.EndReached && stepCount < maxSteps) {
+      if (osmd.cursor.iterator.currentTimeStamp) {
+        const ts = osmd.cursor.iterator.currentTimeStamp.RealValue;
+        cursorTimestamps.push(ts * secPerWholeNote);
+      }
       osmd.cursor.next();
+      stepCount++;
     }
     osmd.cursor.reset();
     osmd.cursor.show();
@@ -262,18 +307,22 @@ function updateCursorPosition(currentTime) {
 
   if (targetIdx === currentCursorIndex) return;
 
-  if (targetIdx > currentCursorIndex) {
-    while (currentCursorIndex < targetIdx && !osmd.cursor.iterator.EndReached) {
-      osmd.cursor.next();
-      currentCursorIndex++;
+  try {
+    if (targetIdx > currentCursorIndex) {
+      while (currentCursorIndex < targetIdx && !osmd.cursor.iterator.EndReached) {
+        osmd.cursor.next();
+        currentCursorIndex++;
+      }
+    } else {
+      osmd.cursor.reset();
+      currentCursorIndex = 0;
+      while (currentCursorIndex < targetIdx && !osmd.cursor.iterator.EndReached) {
+        osmd.cursor.next();
+        currentCursorIndex++;
+      }
     }
-  } else {
-    osmd.cursor.reset();
-    currentCursorIndex = 0;
-    while (currentCursorIndex < targetIdx && !osmd.cursor.iterator.EndReached) {
-      osmd.cursor.next();
-      currentCursorIndex++;
-    }
+  } catch (e) {
+    console.warn("Cursor step error:", e);
   }
 }
 
@@ -289,28 +338,35 @@ function renderMusicXml(musicxmlStr) {
       drawComposer: false,
       drawCredits: false,
       drawPartNames: false,
-      newSystemFromXML: true,
-      newPageFromXML: true,
-      followCursor: true,
     });
-
-    osmd.EngravingRules.NewSystemAtXMLNewSystemAttribute = true;
-    osmd.EngravingRules.NewPageAtXMLNewPageAttribute = true;
 
     currentZoom = 1.0;
     osmd.zoom = currentZoom;
 
-    osmd.load(musicxmlStr).then(() => {
-      osmd.render();
-      if (osmd.cursor) {
-        osmd.cursor.show();
-        osmd.cursor.reset();
-        buildCursorMap(currentScoreBpm);
-      }
-    });
+    osmd.load(musicxmlStr)
+      .then(() => {
+        try {
+          osmd.render();
+          if (osmd.cursor) {
+            osmd.cursor.show();
+            osmd.cursor.reset();
+            buildCursorMap(currentScoreBpm);
+          }
+        } catch (renderErr) {
+          console.warn("Primary OSMD render failed, attempting relaxed fallback render:", renderErr);
+          // Relax layout rules
+          osmd.EngravingRules.NewSystemAtXMLNewSystemAttribute = false;
+          osmd.EngravingRules.NewPageAtXMLNewPageAttribute = false;
+          osmd.render();
+        }
+      })
+      .catch((loadErr) => {
+        console.error("OSMD load rejected:", loadErr);
+        container.innerHTML = `<p style="color: #64748b; padding: 2rem;">Sheet preview could not be displayed (${loadErr.message || 'Parser Error'}). Download links are available above.</p>`;
+      });
   } catch (e) {
-    console.error("OSMD render error:", e);
-    container.innerHTML = `<p style="color: #64748b; padding: 2rem;">MusicXML rendered successfully. Download available below.</p>`;
+    console.error("OSMD initialization error:", e);
+    container.innerHTML = `<p style="color: #64748b; padding: 2rem;">MusicXML ready. Download available below.</p>`;
   }
 }
 
@@ -455,3 +511,267 @@ if (instrumentSelect) {
     updateAudioAndDownloadUrls(selectedInst);
   });
 }
+
+// 6. Local Score Library & IndexedDB Collection Management
+async function refreshCollectionBadge() {
+  try {
+    const scores = await window.collectionStore.getAllScores();
+    if (collectionCountBadge) {
+      collectionCountBadge.textContent = scores.length;
+    }
+  } catch (e) {
+    console.warn("Badge refresh error:", e);
+  }
+}
+
+async function renderCollectionDrawer(filterText = "") {
+  if (!collectionList) return;
+  collectionList.innerHTML = "";
+
+  try {
+    let scores = await window.collectionStore.getAllScores();
+    if (filterText) {
+      const q = filterText.toLowerCase();
+      scores = scores.filter(s => (s.title || "").toLowerCase().includes(q));
+    }
+
+    if (scores.length === 0) {
+      collectionList.innerHTML = `<div class="collection-empty">${filterText ? "No songs matched your search." : "No saved songs yet. Analyze a score or import a collection backup!"}</div>`;
+      return;
+    }
+
+    scores.forEach((s) => {
+      const itemEl = document.createElement("div");
+      itemEl.className = "collection-item" + (currentActiveScore && currentActiveScore.id === s.id ? " active-score" : "");
+      
+      const meta = s.metadata || {};
+      const noteCount = meta.total_notes || "—";
+      const bars = meta.measures ? `${meta.measures} bars` : "";
+      const dateStr = s.createdAt ? new Date(s.createdAt).toLocaleDateString() : "";
+
+      itemEl.innerHTML = `
+        <div class="item-top-row">
+          <div class="item-title">${escapeHtml(s.title || "Untitled")}</div>
+          <div class="item-actions">
+            <button class="btn-icon-item btn-item-rename" title="Rename" data-id="${s.id}">
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            </button>
+            <button class="btn-icon-item btn-delete btn-item-delete" title="Delete" data-id="${s.id}">
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="item-meta-row">
+          <span class="item-badge">${noteCount} notes</span>
+          ${bars ? `<span class="item-badge">${bars}</span>` : ""}
+          <span style="margin-left: auto;">${dateStr}</span>
+        </div>
+      `;
+
+      // Click to load score into player and sheet view
+      itemEl.addEventListener("click", (e) => {
+        if (e.target.closest(".item-actions")) return; // ignore button clicks
+        loadScoreFromCollection(s);
+        closeCollectionDrawer();
+      });
+
+      // Rename button
+      const renameBtn = itemEl.querySelector(".btn-item-rename");
+      renameBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openRenameModal(s.id, s.title);
+      });
+
+      // Delete button
+      const deleteBtn = itemEl.querySelector(".btn-item-delete");
+      deleteBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete "${s.title}" from your library?`)) {
+          await window.collectionStore.deleteScore(s.id);
+          if (currentActiveScore && currentActiveScore.id === s.id) {
+            currentActiveScore = null;
+          }
+          refreshCollectionBadge();
+          renderCollectionDrawer(collectionSearchInput.value);
+        }
+      });
+
+      collectionList.appendChild(itemEl);
+    });
+  } catch (err) {
+    console.error("Render collection error:", err);
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Load a saved score directly from IndexedDB without server transcription
+function loadScoreFromCollection(scoreRecord) {
+  currentActiveScore = scoreRecord;
+  currentJobId = scoreRecord.id.startsWith("job_") ? scoreRecord.id.replace("job_", "") : null;
+
+  uploadSection.classList.add("hidden");
+  progressCard.classList.add("hidden");
+  resultSection.classList.remove("hidden");
+
+  const meta = scoreRecord.metadata || {};
+  metaTitle.textContent = scoreRecord.title || "Untitled";
+  currentScoreHeading.textContent = scoreRecord.title || "Transcribed Music Sheet";
+
+  // Key Signature display
+  const fifths = meta.key_fifths || 0;
+  let keyText = "C Major";
+  if (fifths > 0) keyText = `${fifths}# (${fifths === 1 ? 'G' : fifths === 2 ? 'D' : 'A'} Maj)`;
+  else if (fifths < 0) keyText = `${Math.abs(fifths)}b (${fifths === -1 ? 'F' : 'Bb'} Maj)`;
+  metaKey.textContent = keyText;
+
+  metaTime.textContent = meta.time_signature || "4/4";
+  metaClef.textContent = meta.clef || "G2";
+  metaNotes.textContent = `${meta.total_notes || 0} Notes (${meta.measures || 0} Bars)`;
+
+  if (instrumentSelect) {
+    instrumentSelect.value = "piano";
+  }
+
+  // Set audio sources
+  if (currentJobId) {
+    updateAudioAndDownloadUrls("piano");
+  } else {
+    // Score imported or cached without server job: create data blob URL for MusicXML download
+    const xmlBlob = new Blob([scoreRecord.musicxml], { type: "application/vnd.recordare.musicxml+xml" });
+    btnDownloadXml.href = URL.createObjectURL(xmlBlob);
+    btnDownloadWav.removeAttribute("href");
+    btnDownloadMid.removeAttribute("href");
+  }
+
+  playIcon.innerHTML = '<path d="M8 5v14l11-7z"/>';
+  timelineFill.style.width = "0%";
+  audioCurrentTime.textContent = "00:00";
+
+  currentScoreBpm = scoreRecord.bpm || meta.bpm || 116;
+
+  renderMusicXml(scoreRecord.musicxml);
+}
+
+// Drawer Controls
+function openCollectionDrawer() {
+  collectionOverlay.classList.remove("hidden");
+  renderCollectionDrawer(collectionSearchInput.value);
+}
+
+function closeCollectionDrawer() {
+  collectionOverlay.classList.add("hidden");
+}
+
+if (btnToggleCollection) {
+  btnToggleCollection.addEventListener("click", openCollectionDrawer);
+}
+
+if (btnCloseDrawer) {
+  btnCloseDrawer.addEventListener("click", closeCollectionDrawer);
+}
+
+if (collectionOverlay) {
+  collectionOverlay.addEventListener("click", (e) => {
+    if (e.target === collectionOverlay) {
+      closeCollectionDrawer();
+    }
+  });
+}
+
+if (collectionSearchInput) {
+  collectionSearchInput.addEventListener("input", (e) => {
+    renderCollectionDrawer(e.target.value);
+  });
+}
+
+// Rename Modal Handling
+function openRenameModal(scoreId, currentTitle) {
+  scorePendingRenameId = scoreId;
+  renameInput.value = currentTitle || "";
+  renameModal.classList.remove("hidden");
+  setTimeout(() => renameInput.focus(), 50);
+}
+
+function closeRenameModal() {
+  renameModal.classList.add("hidden");
+  scorePendingRenameId = null;
+}
+
+if (btnCancelRename) {
+  btnCancelRename.addEventListener("click", closeRenameModal);
+}
+
+if (btnSaveRename) {
+  btnSaveRename.addEventListener("click", async () => {
+    if (!scorePendingRenameId) return;
+    const newTitle = renameInput.value.trim() || "Untitled";
+    await window.collectionStore.updateTitle(scorePendingRenameId, newTitle);
+    
+    // If renaming current score, update UI headers
+    if (currentActiveScore && currentActiveScore.id === scorePendingRenameId) {
+      currentActiveScore.title = newTitle;
+      metaTitle.textContent = newTitle;
+      currentScoreHeading.textContent = newTitle;
+    }
+    
+    closeRenameModal();
+    renderCollectionDrawer(collectionSearchInput.value);
+  });
+}
+
+// Inline Rename button from sheet viewer header
+if (btnEditTitleInline) {
+  btnEditTitleInline.addEventListener("click", () => {
+    if (currentActiveScore) {
+      openRenameModal(currentActiveScore.id, currentActiveScore.title);
+    }
+  });
+}
+
+// Export Collection to Versioned JSON
+if (btnExportCollection) {
+  btnExportCollection.addEventListener("click", async () => {
+    try {
+      const jsonStr = await window.collectionStore.exportCollectionJson();
+      const blob = new Blob([jsonStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `music_collection_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Export failed: " + err.message);
+    }
+  });
+}
+
+// Import Collection from JSON (Backward compatible)
+if (importJsonInput) {
+  importJsonInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const count = await window.collectionStore.importCollectionJson(text);
+      alert(`Successfully imported ${count} song(s) into your library!`);
+      refreshCollectionBadge();
+      renderCollectionDrawer(collectionSearchInput.value);
+    } catch (err) {
+      alert("Import failed: " + err.message);
+    } finally {
+      importJsonInput.value = "";
+    }
+  });
+}
+
+// Initial library badge sync
+refreshCollectionBadge();

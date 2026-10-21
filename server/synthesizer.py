@@ -383,10 +383,11 @@ MIDI_PROGRAM_MAP = {
     "harpsichord": 6,    # Harpsichord
     "music_box": 10,     # Music Box
     "organ": 19,         # Church Organ
-    "guitar": 24,        # Acoustic Nylon Guitar
+    "guitar": 25,        # Acoustic Guitar (Steel String - warm, resonant)
+    "guitar_nylon": 24,  # Acoustic Nylon Guitar
     "strings": 48,       # String Ensemble 1
     "trumpet": 56,       # Trumpet
-    "flute": 73,         # Flute
+    "flute": 73,         # Concert Flute
     "chiptune": 80,      # Lead 1 (square wave)
 }
 
@@ -415,12 +416,48 @@ def render_soundfont_wav(events: list, output_wav: str, instrument: str = "piano
 
         block_size = 512
         actions = []
+
+        # Instrument-specific duration ring multiplier & minimum decay
+        ring_mult = {
+            "guitar": 1.65,
+            "guitar_nylon": 1.50,
+            "music_box": 1.75,
+            "piano": 1.35,
+            "epiano": 1.35,
+            "harpsichord": 1.30,
+            "strings": 1.05,
+            "flute": 1.02,
+            "organ": 1.00,
+            "chiptune": 1.00
+        }.get(instrument.lower(), 1.1)
+
+        min_dur = {
+            "guitar": 0.40,
+            "guitar_nylon": 0.35,
+            "music_box": 0.35,
+            "piano": 0.20,
+            "epiano": 0.20,
+            "harpsichord": 0.18,
+            "strings": 0.15,
+            "flute": 0.10,
+            "organ": 0.08,
+            "chiptune": 0.08
+        }.get(instrument.lower(), 0.12)
+
         for e in events:
             start_s = int(e["start_sec"] * sample_rate)
-            # Natural sustain release extension for plucked/struck instruments
-            mult = 1.35 if instrument in ["piano", "epiano", "music_box", "guitar", "harpsichord"] else 1.0
-            dur_s = int(max(0.12, e["dur_sec"] * mult) * sample_rate)
-            vel = int(np.clip(e["vol"] * 125, 1, 127))
+            dur_s = int(max(min_dur, e["dur_sec"] * ring_mult) * sample_rate)
+
+            # Instrument-specific velocity curve tuning
+            if instrument.lower() == "flute":
+                # Flute sweet-spot: velocity 80-88 plays the warm, lyrical tone without harsh overblowing
+                vel = int(np.clip(e["vol"] * 88, 45, 88))
+            elif instrument.lower() in ["guitar", "guitar_nylon"]:
+                # Guitar sweet-spot: velocity 82-96 gives resonant acoustic plucking without snapping
+                vel = int(np.clip(e["vol"] * 96, 45, 96))
+            else:
+                vel = int(np.clip(e["vol"] * 122, 1, 127))
+
             actions.append((start_s, 'on', int(e["midi"]), vel))
             actions.append((start_s + dur_s, 'off', int(e["midi"]), 0))
 
